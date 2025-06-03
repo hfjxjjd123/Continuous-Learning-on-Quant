@@ -383,6 +383,8 @@ def run_single_window(
     skip_if_completed: bool = True,
     asset_class_dictionary: Dict[str, str] = None,
     hp_minibatch_size: List[int] = HP_MINIBATCH_SIZE,
+    best_hp_path: str = None,
+    skip_hp_search: bool = False,
 ):
     """Backtest for a single test window
 
@@ -460,10 +462,38 @@ def run_single_window(
         dmn = None
         raise Exception(f"{params['architecture']} is not a valid architecture.")
 
-    best_hp, best_model = dmn.hyperparameter_search(
-        model_features.train, model_features.valid
-    )
-    val_loss = dmn.evaluate(model_features.valid, best_model)
+    # New logic for skipping HP search and loading best HP
+    if skip_hp_search and best_hp_path is not None:
+        # Load best_hp from JSON
+        with open(best_hp_path, "r") as f:
+            best_hp = json.load(f)
+        # Build model with best_hp
+        if hasattr(dmn, "build_model"):
+            best_model = dmn.build_model(best_hp)
+        elif hasattr(dmn, "_build_model"):
+            best_model = dmn._build_model(best_hp)
+        else:
+            raise Exception("No build_model or _build_model method found in model.")
+        # Train model - try to call train() if exists, otherwise use hyperparameter_search with one-element list
+        if hasattr(dmn, "train"):
+            dmn.train(model_features.train, model_features.valid, best_model, best_hp)
+        else:
+            # Override hp_minibatch_size and call hyperparameter_search over just best_hp
+            # This assumes hyperparameter_search can take a search space override
+            # We'll call it with a list containing only best_hp["batch_size"]
+            best_hp_batch_size = [best_hp["batch_size"]] if "batch_size" in best_hp else hp_minibatch_size
+            dmn.hp_minibatch_size = best_hp_batch_size
+            # Try to call hyperparameter_search with only best_hp as search space
+            best_hp, best_model = dmn.hyperparameter_search(
+                model_features.train, model_features.valid, search_space=[best_hp]
+            )
+        # Evaluate model
+        val_loss = dmn.evaluate(model_features.valid, best_model)
+    else:
+        best_hp, best_model = dmn.hyperparameter_search(
+            model_features.train, model_features.valid
+        )
+        val_loss = dmn.evaluate(model_features.valid, best_model)
 
     print(f"Best validation loss = {val_loss}")
     print(f"Best params:")
@@ -597,6 +627,10 @@ def run_all_windows(
             changepoint_lbws,
             asset_class_dictionary=asset_class_dictionary,
             hp_minibatch_size=hp_minibatch_size,
+            best_hp_path="./results/experiment_binance_100assets_tft_cpnone_len63_notime_div_v1/2022-2023/hyperparameters.json",
+            skip_hp_search=True
+            # To reuse existing hyperparameters, pass e.g.:
+            # best_hp_path="path/to/hyperparameters.json", skip_hp_search=True
         )
 
     aggregate_and_save_all_windows(

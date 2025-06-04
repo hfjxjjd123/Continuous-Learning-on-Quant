@@ -198,7 +198,7 @@ class TunerDiversifiedSharpe(kt.tuners.RandomSearch):
 class DeepMomentumNetworkModel(ABC):
     def __init__(self, project_name, hp_directory, hp_minibatch_size, **params):
         params = params.copy()
-
+        print(f"#15 WHAT? : {params}")
         self.time_steps = int(params["total_time_steps"])
         self.input_size = int(params["input_size"])
         self.output_size = int(params["output_size"])

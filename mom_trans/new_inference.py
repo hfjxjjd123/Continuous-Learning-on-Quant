@@ -536,7 +536,7 @@ def run_single_window(
         # 2) performance metrics identical to the all‑window summary
         metrics_this_chunk = calc_performance_metrics(
             df_chunk.set_index("time"),
-            suffix=f"_chunk{chunk_id + 1}",
+            metric_suffix=f"_chunk{chunk_id + 1}",
             num_identifiers=model_features.num_tickers,
         )
         # store under a key so we can JSON‑dump later

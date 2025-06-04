@@ -99,6 +99,8 @@ def main(
         params["train_valid_ratio"] = TRAIN_VALID_RATIO
         params["time_features"] = TIME_FEATURES
         params["force_output_sharpe_length"] = FORCE_OUTPUT_SHARPE_LENGTH
+        params["online_learning"] = True
+        params["continual_training"] = True
 
         if TEST_MODE:
             params["num_epochs"] = 1

@@ -14,6 +14,7 @@ from mom_trans.model_inputs import ModelFeatures
 from mom_trans.deep_momentum_network import LstmDeepMomentumNetworkModel
 from mom_trans.momentum_transformer import TftDeepMomentumNetworkModel
 from mom_trans.classical_strategies import (
+    annual_volatility,
     VOL_TARGET,
     calc_performance_metrics,
     calc_performance_metrics_subset,
@@ -136,7 +137,13 @@ def _captured_returns_from_all_windows(
     """
     srs_list = []
     volatilites = volatilites_known if volatilites_known else []
+    print(f"#17 train_intervals: {train_intervals}")
     for interval in train_intervals:
+        print(f"#18 entry interval: {interval}")
+        print(f"#18 if 1: {only_standard_windows}")
+        print(f"#18 if 2: {interval[2] - interval[1] == standard_window_size}")
+        
+        
         if only_standard_windows and (
             interval[2] - interval[1] == standard_window_size
         ):
@@ -389,6 +396,7 @@ def run_single_window(
     best_hp_path: str = None,
     skip_hp_search: bool = False,
 ):
+    print(f"#18 SINGLE WINDOW RUN")
     """Backtest for a single test window
 
     Args:
@@ -513,14 +521,38 @@ def run_single_window(
     print(f"performance (sliding window) = {performance_sw}")
 
     # ------------------------------------------------------------------
-    # Split the sliding‑window results into 8 096‑row evaluation files
+    # Save each 8 096‑row chunk **and** compute its own performance stats
     # ------------------------------------------------------------------
     results_sw_sorted = results_sw.sort_values("time").reset_index(drop=True)
     results_sw_sorted["chunk"] = results_sw_sorted.index // 8096
 
+    chunk_metrics: Dict[str, Dict[str, float]] = {}
+
     for chunk_id, df_chunk in results_sw_sorted.groupby("chunk"):
+        # 1) raw captured‑returns for the chunk
         out_fname = f"captured_returns_sw_eval{chunk_id + 1}.csv"
         df_chunk.to_csv(os.path.join(directory, out_fname), index=False)
+
+        # 2) performance metrics identical to the all‑window summary
+        metrics_this_chunk = calc_performance_metrics(
+            df_chunk.set_index("time"),
+            suffix=f"_chunk{chunk_id + 1}",
+            num_identifiers=model_features.num_tickers,
+        )
+        # store under a key so we can JSON‑dump later
+        chunk_metrics[f"chunk_{chunk_id + 1}"] = metrics_this_chunk
+
+    # persist per‑chunk results
+    with open(os.path.join(directory, "results_chunks.json"), "w") as fp:
+        # numpy types aren’t JSON‑serialisable by default → cast to float
+        json.dump(
+            {
+                k: {m: float(vv) for m, vv in v.items()}
+                for k, v in chunk_metrics.items()
+            },
+            fp,
+            indent=4,
+        )
 
     raw_data = raw_data.drop(columns=["Time"])
 

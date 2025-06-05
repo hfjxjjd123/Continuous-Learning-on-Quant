@@ -699,10 +699,11 @@ class ModelFeatures:
             ]
 
         def _get_locations(input_types, defn):
+            print(f"#25 18th -> {defn[18]}")
+            print(f"#25 whole defn -> {defn}")
             return [i for i, tup in enumerate(defn) if tup[2] in input_types]
 
         # Start extraction
-        print(f"get_col_def -> {self.get_column_definition()}")
         column_definition = [
             tup
             for tup in self.get_column_definition()

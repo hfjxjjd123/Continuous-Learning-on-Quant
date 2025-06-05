@@ -39,18 +39,10 @@ def pull_binance_sample_data_ft(symbol: str) -> pd.DataFrame:
     path = os.path.join("datasets", "online15m", f"{symbol}.csv")
     df = pd.read_csv(path, dtype = dtypes)
     
-    path2 = os.path.join("datasets", "gen15m", f"{symbol}.csv")
-    df2 = pd.read_csv(path2, dtype = dtypes)
-    df2 = df2.tail(38000)
-    print(f"df2.head(5) : {df2.head(5)}")
-    print(f"df2.tail(5) : {df2.tail(5)}")    
-    
-    merged_df = pd.concat([df2, df], ignore_index=True)
-    
-    merged_df['Time'] = pd.to_datetime(merged_df['Time'], unit='s', utc=True)
-    merged_df = merged_df.set_index('Time')
+    df['Time'] = pd.to_datetime(df['Time'], unit='s', utc=True)
+    df = df.set_index('Time')
 
-    return merged_df
+    return df
 
 
 def pull_pinnacle_data(ticker: str) -> pd.DataFrame:

@@ -453,6 +453,7 @@ class TftDeepMomentumNetworkModel(DeepMomentumNetworkModel):
 
             return static_vec, sparse_weights
 
+        print(f"#23 static_inputs here -> {static_inputs}")
         static_encoder, static_weights = static_combine_and_mask(static_inputs)
 
         static_context_variable_selection = gated_residual_network(
@@ -714,7 +715,7 @@ class TftDeepMomentumNetworkModel(DeepMomentumNetworkModel):
                     all_inputs.shape[-1], self.input_size
                 )
             )
-
+    
         num_categorical_variables = len(self.category_counts)
         num_regular_variables = self.input_size - num_categorical_variables
 
@@ -749,6 +750,7 @@ class TftDeepMomentumNetworkModel(DeepMomentumNetworkModel):
         ]
 
         # Static inputs
+        print(f"#23 SHOULD NOT BE NONE -- f{self._static_input_loc}")
         if self._static_input_loc:
             static_inputs = [
                 keras.layers.Dense(self.hidden_layer_size)(

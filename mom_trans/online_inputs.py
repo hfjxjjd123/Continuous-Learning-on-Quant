@@ -19,7 +19,6 @@ class DataTypes(enum.IntEnum):
 
 class InputTypes(enum.IntEnum):
     """Defines input types of each column."""
-
     TARGET = 0
     OBSERVED_INPUT = 1
     KNOWN_INPUT = 2
@@ -69,27 +68,20 @@ class ModelFeatures:
 
     def __init__(
         self,
-        df,
-        total_time_steps,
-        start_boundary=2023,
-        test_boundary=2023,
-        test_end=2025,
+        train_df: pd.DataFrame,
+        test_df : pd.DataFrame,
+        total_time_steps: int,
         changepoint_lbws=None,
-        train_valid_sliding=False,
-        # add_buffer_times_to_test=1,  # TODO FIX THIS!!!!
-        transform_real_inputs=False,  # TODO remove this
-        train_valid_ratio=0.9,
-        split_tickers_individually=True,
-        add_ticker_as_static=False,
-        time_features=False,
+        train_valid_sliding: bool = False,
+        transform_real_inputs: bool = False,
+        train_valid_ratio: float = 0.9,   # kept for API compatibility (ignored)
+        split_tickers_individually: bool = True,
+        add_ticker_as_static: bool = False,
+        time_features: bool = False,
         lags=None,
         asset_class_dictionary=None,
-        static_ticker_type_feature = False,
+        static_ticker_type_feature: bool = False,
     ):
-        start_boundary = pd.to_datetime(dt.datetime(start_boundary, 1, 1)).tz_localize("UTC")
-        test_boundary  = pd.to_datetime(dt.datetime(test_boundary, 1, 1)).tz_localize("UTC")
-        test_end       = pd.to_datetime(dt.datetime(test_end, 1, 1)).tz_localize("UTC")
-
         """Initialises formatter. Splits data frame into training-validation-test data frames.
         This also calibrates scaling object, and transforms data for each split."""
         self._column_definition = [
@@ -115,11 +107,14 @@ class ModelFeatures:
             ("sin_hour",        DataTypes.REAL_VALUED, InputTypes.KNOWN_INPUT),
             ("cos_hour",        DataTypes.REAL_VALUED, InputTypes.KNOWN_INPUT),
         ]
-        df = df.dropna()
-        print(df.columns)
-        
-        df = df[df.index >= start_boundary].copy()
-        df["Time"] = df.index
+        # ------------------------------------------------------------------
+        # 0) Use *already‑split* data provided by the caller
+        # ------------------------------------------------------------------
+        df_train = train_df.dropna().copy()
+        df_test  = test_df.dropna().copy()
+
+        # unified frame for any operations that require both
+        df_all   = pd.concat([df_train, df_test]).sort_index()
 
         self.identifiers = None
         self._real_scalers = None
@@ -154,39 +149,36 @@ class ModelFeatures:
             # self._column_definition.append(
             #     (f"month_of_year", DataTypes.REAL_VALUED, InputTypes.KNOWN_INPUT)
             # )
-
             # dataframe could have later times
-            start_date = dt.datetime(start_boundary, 1, 1)
-            days_from_start_max = (dt.datetime(test_end - 1, 12, 31) - start_date).days
-            df["days_from_start"] = (df.index - start_date).days
-            df["days_from_start"] = np.minimum(
-                df["days_from_start"], days_from_start_max
-            )
-
-            df["days_from_start"] = (
-                MinMaxScaler().fit_transform(df[["days_from_start"]].values).flatten()
-            )
-            df["day_of_week"] = (
-                MinMaxScaler().fit_transform(df[["day_of_week"]].values).flatten()
-            )
-            df["day_of_month"] = (
-                MinMaxScaler().fit_transform(df[["day_of_month"]].values).flatten()
-            )
-            # df["week_of_year"] = (
-            #     MinMaxScaler().fit_transform(df[["week_of_year"]].values).flatten()
-            # )
-            # df["month_of_year"] = MinMaxScaler().fit_transform(df[["month_of_year"]].values).flatten()
+            # For online workflow, we use the min index of df_all as start
+            start_date = df_all.index.min().to_pydatetime()
+            days_from_start_max = (df_all.index.max().to_pydatetime() - start_date).days
+            for _df in [df_train, df_test]:
+                _df["days_from_start"] = (_df.index - start_date).days
+                _df["days_from_start"] = np.minimum(
+                    _df["days_from_start"], days_from_start_max
+                )
+                _df["days_from_start"] = (
+                    MinMaxScaler().fit_transform(_df[["days_from_start"]].values).flatten()
+                )
+                _df["day_of_week"] = (
+                    MinMaxScaler().fit_transform(_df[["day_of_week"]].values).flatten()
+                )
+                _df["day_of_month"] = (
+                    MinMaxScaler().fit_transform(_df[["day_of_month"]].values).flatten()
+                )
 
         if add_ticker_as_static:
             self._column_definition.append(
                 (f"static_ticker", DataTypes.CATEGORICAL, InputTypes.STATIC_INPUT)
             )
-            print(f"df cols: {df.columns}")
-            df["static_ticker"] = df["symbol"]
+            for _df in [df_train, df_test]:
+                _df["static_ticker"] = _df["symbol"]
+                if static_ticker_type_feature:
+                    _df["static_ticker_type"] = _df["symbol"].map(
+                        lambda t: asset_class_dictionary[t]
+                    )
             if static_ticker_type_feature:
-                df["static_ticker_type"] = df["symbol"].map(
-                    lambda t: asset_class_dictionary[t]
-                )
                 self._column_definition.append(
                     (
                         f"static_ticker_type",
@@ -197,20 +189,60 @@ class ModelFeatures:
 
         self.transform_real_inputs = transform_real_inputs
 
-        # for static_variables
-        # self._column_definition.append(("ticker", DataTypes.CATEGORICAL, InputTypes.STATIC_INPUT))
+        # No validation split in online-learning workflow
+        train = df_train
+        valid = pd.DataFrame()
+        test  = df_test
 
-        # Inference-only mode: use entire df as train set
-        print(f"DEBUG - {len(df)}")
-        self.set_scalers(df)
-        self.train = None
-        self.valid = None
-        
-        self.test_fixed = self.transform_inputs(df)
-        self.test_sliding = self._batch_data(self.test_fixed, sliding_window=True)
-        self.tickers = list(df.symbol.unique())
-        self.num_tickers = len(self.tickers)
-        return
+        tickers = sorted(set(df_all["symbol"].unique()))
+
+        test_with_buffer = pd.concat(
+            [
+                pd.concat(
+                    [
+                        df_train[df_train.symbol == t].iloc[-(self.total_time_steps - 1):],
+                        df_test[df_test.symbol == t],
+                    ]
+                ).sort_index()
+                for t in tickers
+            ]
+        )
+
+        self.tickers = tickers
+        self.num_tickers = len(tickers)
+        # Choose data to fit scalers on.
+        # For pure‑inference runs the training split can be empty; fall back to
+        # validation or test data so that scalers always have at least one row.
+        scaler_source = train
+        if scaler_source.empty:
+            if not valid.empty:
+                scaler_source = valid
+            else:
+                scaler_source = test
+
+        self.set_scalers(scaler_source)
+
+        train, valid, test, test_with_buffer = [
+            self.transform_inputs(data)
+            for data in [train, valid, test, test_with_buffer]
+        ]
+
+        if lags:
+            self.train = self._batch_data_smaller_output(
+                train, train_valid_sliding, self.lags
+            )
+            self.valid = self._batch_data_smaller_output(
+                valid, train_valid_sliding, self.lags
+            )
+            self.test_fixed = self._batch_data_smaller_output(test, False, self.lags)
+            self.test_sliding = self._batch_data_smaller_output(
+                test_with_buffer, True, self.lags
+            )
+        else:
+            self.train = self._batch_data(train, train_valid_sliding)
+            self.test_fixed = self._batch_data(test, False)
+            self.test_sliding = self._batch_data(test_with_buffer, True)
+            
 
     def set_scalers(self, df):
         """Calibrates scalers using the data supplied.
@@ -391,7 +423,7 @@ class ModelFeatures:
         """
         # TODO this works but is a bit of a mess
         data = data.copy()
-        print(f"DEBUG: {data.columns}")
+
         data["date"] = data.index.strftime("%Y-%m-%d")
 
         id_col = get_single_col_by_input_type(InputTypes.ID, self._column_definition)
@@ -410,15 +442,12 @@ class ModelFeatures:
 
         data_map = {}
 
-        if sliding_window:
+        if sliding_window:           
             # Functions.
             def _batch_single_entity(input_data):
                 time_steps = len(input_data)
                 lags = self.total_time_steps  # + int(self.extra_lookahead_steps)
                 x = input_data.values
-                print(f"lags : {lags}")
-                print(f"time_step : {time_steps}")
-                
                 if time_steps >= lags:
                     return np.stack(
                         [x[i : time_steps - (lags - 1) + i, :] for i in range(lags)],
@@ -435,6 +464,7 @@ class ModelFeatures:
                     "outputs": [target_col],
                     "inputs": input_cols,
                 }
+
                 for k in col_mappings:
                     cols = col_mappings[k]
                     arr = _batch_single_entity(sliced[cols].copy())
@@ -446,10 +476,7 @@ class ModelFeatures:
 
             # Combine all data
             for k in data_map:
-                print(f"#7 datamap {len(data_map[k][0])}")
-                print(f"#7 datamap {data_map[k][0].shape}")
                 data_map[k] = np.concatenate(data_map[k], axis=0)
-                print(f"#7 Iter {k}")
 
             active_entries = np.ones_like(data_map["outputs"])
             if "active_entries" not in data_map:
@@ -459,7 +486,7 @@ class ModelFeatures:
 
         else:
             for _, sliced in data.groupby(id_col):
-
+                print(f"COUNTING")
                 col_mappings = {
                     "identifier": [id_col],
                     "date": [time_col],
@@ -494,6 +521,7 @@ class ModelFeatures:
                     for i in range(batch_size)
                 ]
                 active_entries = np.ones((arr.shape[0], arr.shape[1], arr.shape[2]))
+                
                 for i in range(batch_size):
                     active_entries[i, sequence_lengths[i] :, :] = 0
                 sequence_lengths = np.array(sequence_lengths, dtype=np.int32)
@@ -502,6 +530,7 @@ class ModelFeatures:
                     data_map["active_entries"] = [
                         active_entries[sequence_lengths > 0, :, :]
                     ]
+                    
                 else:
                     data_map["active_entries"].append(
                         active_entries[sequence_lengths > 0, :, :]
@@ -513,7 +542,6 @@ class ModelFeatures:
                     data_map[k].append(arr[sequence_lengths > 0, :, :])
 
                 for k in set(col_mappings) - {"outputs"}:
-                    print("#5 DEBUGING")
                     cols = col_mappings[k]
                     arr = _batch_single_entity(sliced[cols].copy())
 
@@ -674,6 +702,7 @@ class ModelFeatures:
             return [i for i, tup in enumerate(defn) if tup[2] in input_types]
 
         # Start extraction
+        print(f"get_col_def -> {self.get_column_definition()}")
         column_definition = [
             tup
             for tup in self.get_column_definition()
@@ -690,6 +719,10 @@ class ModelFeatures:
         input_size = len(self._get_input_columns())
 
         # TODO artefact of previous code - need to clean up
+        print(f"#26 input 1 => {{InputTypes.STATIC_INPUT}}")
+        print(f"#26 input 2 => {column_definition}")
+        print(f"#26 func?/ => {_get_locations({InputTypes.STATIC_INPUT}, column_definition)}")
+        # TODO 다른 모델의 locations를 까봐야알듯
         locations = {
             # "lstm_input_size": input_size,
             "input_size": input_size,
@@ -708,6 +741,6 @@ class ModelFeatures:
                 {InputTypes.STATIC_INPUT, InputTypes.KNOWN_INPUT}, categorical_inputs
             ),
         }
-        print(f"#23 --- locations: {locations}")
+        print(f"#24 LOCATION: {locations}")
 
         return locations

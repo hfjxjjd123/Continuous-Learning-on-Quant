@@ -87,6 +87,7 @@ def run_online_learning(
     # Determine total number of steps and how many windows
     total_steps = len(full_df)
     n_windows = math.floor((total_steps - window_size) / delta) + 1
+    print(f"n_windows: {n_windows}")
 
     # ------------------------------------------------------------------
     # 3) Iterate over sliding windows

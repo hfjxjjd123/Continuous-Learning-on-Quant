@@ -35,7 +35,7 @@ def run_online_learning(
     window_size: int,
     delta: int,
     fine_tune_epochs: int = 1,
-    hp_minibatch_size: int = 64,
+    hp_minibatch_size = 64,
     asset_class_dictionary = Dict[str, str]
 ):
     """
@@ -94,6 +94,7 @@ def run_online_learning(
     # ------------------------------------------------------------------
     aggregate_results = []
     for w in range(n_windows):
+        print(f"#FINAL w now: {w}")
         start = w * delta
         end   = start + window_size
         train_window = full_df.iloc[start:end].copy()
@@ -112,11 +113,11 @@ def run_online_learning(
             transform_real_inputs = False,
             train_valid_ratio=0.9,
             split_tickers_individually=True,
-            add_ticker_as_static=False,
+            add_ticker_as_static=True,
             time_features=False,
             lags=None,
-            asset_class_dictionary=None,
-            static_ticker_type_feature = False,
+            asset_class_dictionary=asset_class_dictionary,
+            static_ticker_type_feature = True,
         )
         print(f"HOPE PASS HERE")
 
@@ -142,17 +143,23 @@ def run_online_learning(
             },
         )
         model = dmn.load_model(params)
-        if hp_minibatch_size is not None:
-            params["batch_size"] = hp_minibatch_size
-
-        print(f"#21 PASS?")
     
         #TODO checkpoint -> need to fix
+        print(f"hp size: {hp_minibatch_size}")
+        # --------------------------------------------------------------
+        # 3a) Continue training (online fine‑tuning)
+        # --------------------------------------------------------------
+        # Explicitly unpack inputs, labels, and sample‑weights
+        train_inputs, train_labels, train_weights, _, _ = ModelFeatures._unpack(train_data)
+
         model.fit(
-            *ModelFeatures._unpack(train_data)[:3],                 # data, labels, weights
-            epochs      = fine_tune_epochs,
-            batch_size  = params["batch_size"],
-            verbose     = 0,
+            x=train_inputs,
+            y=train_labels,
+            sample_weight=train_weights,
+            epochs=fine_tune_epochs,
+            batch_size=hp_minibatch_size,
+            verbose=0,
+            shuffle=False,  # keep temporal order for online learning
         )
 
         # --------------------------------------------------------------

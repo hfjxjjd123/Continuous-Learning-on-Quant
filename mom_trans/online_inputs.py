@@ -5,6 +5,7 @@ import sklearn.preprocessing
 import pandas as pd
 import datetime as dt
 import enum
+from typing import Tuple, List, Dict
 
 from sklearn.preprocessing import MinMaxScaler
 
@@ -76,11 +77,11 @@ class ModelFeatures:
         transform_real_inputs: bool = False,
         train_valid_ratio: float = 0.9,   # kept for API compatibility (ignored)
         split_tickers_individually: bool = True,
-        add_ticker_as_static: bool = False,
+        add_ticker_as_static: bool = True,
         time_features: bool = False,
         lags=None,
-        asset_class_dictionary=None,
-        static_ticker_type_feature: bool = False,
+        asset_class_dictionary=Dict[str, str],
+        static_ticker_type_feature: bool = True,
     ):
         """Initialises formatter. Splits data frame into training-validation-test data frames.
         This also calibrates scaling object, and transforms data for each split."""
@@ -167,18 +168,20 @@ class ModelFeatures:
                 _df["day_of_month"] = (
                     MinMaxScaler().fit_transform(_df[["day_of_month"]].values).flatten()
                 )
-
+            
+        
         if add_ticker_as_static:
             self._column_definition.append(
                 (f"static_ticker", DataTypes.CATEGORICAL, InputTypes.STATIC_INPUT)
             )
-            for _df in [df_train, df_test]:
+            
+            for _df in [df_test, df_train]:
                 _df["static_ticker"] = _df["symbol"]
-                if static_ticker_type_feature:
-                    _df["static_ticker_type"] = _df["symbol"].map(
-                        lambda t: asset_class_dictionary[t]
-                    )
+            
             if static_ticker_type_feature:
+                for _df in [df_test, df_train]:
+                    _df["static_ticker_type"] = _df["symbol"].map(lambda t: asset_class_dictionary[t])
+                
                 self._column_definition.append(
                     (
                         f"static_ticker_type",
@@ -222,17 +225,14 @@ class ModelFeatures:
 
         self.set_scalers(scaler_source)
 
-        train, valid, test, test_with_buffer = [
+        train, test, test_with_buffer = [
             self.transform_inputs(data)
-            for data in [train, valid, test, test_with_buffer]
+            for data in [train, test, test_with_buffer]
         ]
 
         if lags:
             self.train = self._batch_data_smaller_output(
                 train, train_valid_sliding, self.lags
-            )
-            self.valid = self._batch_data_smaller_output(
-                valid, train_valid_sliding, self.lags
             )
             self.test_fixed = self._batch_data_smaller_output(test, False, self.lags)
             self.test_sliding = self._batch_data_smaller_output(
@@ -280,6 +280,7 @@ class ModelFeatures:
 
         categorical_scalers = {}
         num_classes = []
+        
         for col in categorical_inputs:
             # Set all to str so that we don't have mixed integer/string columns
             srs = df[col].apply(str)
@@ -323,6 +324,9 @@ class ModelFeatures:
             output[real_inputs] = self._real_scalers.transform(df[real_inputs].values)
 
         # Format categorical inputs
+        print(f"#30 Here categorical_inputs : {categorical_inputs}")   
+        print(f"#30 DF?? : {df.columns}")
+        print(f"#30 DF?? : {df.head(5)}")
         for col in categorical_inputs:
             string_df = df[col].apply(str)
             output[col] = self._cat_scalers[col].transform(string_df)
@@ -699,8 +703,6 @@ class ModelFeatures:
             ]
 
         def _get_locations(input_types, defn):
-            print(f"#25 18th -> {defn[18]}")
-            print(f"#25 whole defn -> {defn}")
             return [i for i, tup in enumerate(defn) if tup[2] in input_types]
 
         # Start extraction

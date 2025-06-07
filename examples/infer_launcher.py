@@ -27,6 +27,14 @@ params["time_features"] = TIME_FEATURES
 params["force_output_sharpe_length"] = FORCE_OUTPUT_SHARPE_LENGTH
 params["online_learning"] = True
 params["continual_training"] = True
+# -------------------------------------------------------------------
+# Elastic Weight Consolidation (EWC) settings
+# -------------------------------------------------------------------
+# "auto" → heuristic λ estimation (estimate_lambda_ewc)
+# or set a fixed float, e.g. 2000
+params["lambda_ewc"] = "auto"
+# target ratio of (EWC penalty) : (task loss) ≈ 0.5
+params["lambda_ewc_target_ratio"] = 0.5
 best_hp = load_best_hp("results/experiment_binance_100assets_tft_cpnone_len63_notime_div_v2/hyperparameters.json")
 
 params.update(best_hp)
@@ -39,5 +47,5 @@ run_online_learning(
     delta                  = 2016,   # 3주
     hp_minibatch_size = 64,
     asset_class_dictionary = ASSET_CLASS_MAPPING,
-    fine_tune_epochs       = 1
+    fine_tune_epochs       = 1  # window‑wise extra epochs (>=1)
 )

@@ -87,6 +87,55 @@ def apply_ewc_penalty(model,
         # Keras will add this term to the total loss automatically
         model.add_loss(tf.reduce_sum(penalty))
 
+# ----------------------------------------------------------------------
+# Heuristic lambda estimation for EWC
+# ----------------------------------------------------------------------
+def estimate_lambda_ewc(model,
+                        theta_star: Dict[str, tf.Tensor],
+                        fisher: Dict[str, tf.Tensor],
+                        inputs,
+                        labels,
+                        desired_ratio: float = 0.5,
+                        batch_size: int = 64) -> float:
+    """
+    Fast heuristic (히스테릭) method to choose λ_EWC.
+    Computes:
+        λ* ≈  desired_ratio ×  (L_orig / penalty_λ=1)
+    where
+        L_orig      = mean task‑loss on current window
+        penalty_λ=1 = Σ_i F_i (θ_i − θ*_i)^2  (with λ=1)
+
+    If either value is 0 → returns default 1e3.
+    """
+    # ---- 1) penalty value with λ=1 ---------------------------------
+    penalty_val = 0.0
+    for v in model.trainable_weights:
+        if v.name not in fisher:
+            continue
+        penalty_val += tf.reduce_sum(
+            fisher[v.name] * tf.square(v - theta_star[v.name])
+        )
+    penalty_val = float(penalty_val.numpy())
+
+    # ---- 2) baseline task‑loss -------------------------------------
+    ds = tf.data.Dataset.from_tensor_slices((inputs, labels)).batch(batch_size)
+    loss_fn = model.loss
+    loss_sum = 0.0
+    n_batches = 0
+    for x_b, y_b in ds:
+        preds = model(x_b, training=False)
+        batch_loss = tf.reduce_mean(loss_fn(y_b, preds))
+        loss_sum += float(batch_loss.numpy())
+        n_batches += 1
+    L_orig = loss_sum / max(n_batches, 1)
+
+    if penalty_val == 0 or L_orig == 0:
+        return 1e3  # fallback
+
+    lambda_star = desired_ratio * (L_orig / penalty_val)
+    # Clamp to sensible positive range
+    return float(max(lambda_star, 1e-2))
+
 # ======================================================================
 #                      ONLINE‑LEARNING HELPER
 # ======================================================================
@@ -137,14 +186,22 @@ def run_online_learning(
 
     Notes
     -----
-    Supports Elastic Weight Consolidation (EWC) regularization if
-    `params` contains `"lambda_ewc"` (float).
+    Supports EWC if you pass:
+        "lambda_ewc": &lt;float&gt;            # fixed value
+        "lambda_ewc": "auto"               # fast heuristic tuning
+        "lambda_ewc_target_ratio": 0.5     # optional, default 0.5
     """
-    
+
     # --------------------  EWC state  ---------------------------------
-    # λ is read from `params`, default = 1000.0
-    lambda_ewc = float(params.get("lambda_ewc", 1000.0))
-    # These two dicts will be updated after every window
+    raw_lambda = params.get("lambda_ewc", "auto")   # "auto" triggers heuristic
+    auto_lambda = (isinstance(raw_lambda, str) and raw_lambda.lower() == "auto")
+    lambda_ewc: float | None
+    if auto_lambda:
+        lambda_ewc = None            # will be estimated after first window
+    else:
+        lambda_ewc = float(raw_lambda)
+
+    desired_ratio = float(params.get("lambda_ewc_target_ratio", 0.5))
     ewc_fisher: Dict[str, tf.Tensor] = {}
     theta_star: Dict[str, tf.Tensor] = {}
 
@@ -219,12 +276,25 @@ def run_online_learning(
         model = dmn.load_model(params)
 
         # --------------------------------------------------------------
-        # (Optional) add EWC penalty based on previous windows
+        # (Optional) add / tune EWC penalty based on previous windows
         # --------------------------------------------------------------
-        if theta_star:          # empty on first window
-            apply_ewc_penalty(model, theta_star, ewc_fisher, lambda_ewc)
-            # Re‑compile so the added regularisation is respected
-            model.compile(optimizer=model.optimizer, loss=model.loss)
+        if theta_star:
+            if auto_lambda and lambda_ewc is None:
+                lambda_ewc = estimate_lambda_ewc(
+                    model,
+                    theta_star,
+                    ewc_fisher,
+                    train_inputs,
+                    train_labels,
+                    desired_ratio=desired_ratio,
+                    batch_size=hp_minibatch_size,
+                )
+                print(f"[EWC] Auto‑tuned λ = {lambda_ewc:.3e} (target ratio {desired_ratio})")
+
+            if lambda_ewc is not None:
+                apply_ewc_penalty(model, theta_star, ewc_fisher, lambda_ewc)
+                # Re‑compile so the added regularisation is respected
+                model.compile(optimizer=model.optimizer, loss=model.loss)
     
         #TODO checkpoint -> need to fix
         print(f"hp size: {hp_minibatch_size}")

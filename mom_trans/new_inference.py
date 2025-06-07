@@ -8,6 +8,8 @@ from mom_trans.classical_strategies import calc_performance_metrics
 from typing import Tuple, List, Dict
 from mom_trans.momentum_transformer import TftDeepMomentumNetworkModel
 from mom_trans.online_inputs import ModelFeatures
+# --- Added for Elastic‑Weight‑Consolidation --------------------------
+import tensorflow as tf
 
 def _get_directory_name(
     experiment_name: str
@@ -24,6 +26,66 @@ def _load_csv(path: str, time_col: str = "Time") -> pd.DataFrame:
         print("NO TIME INSIDE")
         df['Time'] = df.index
     return df
+
+# ----------------------------------------------------------------------
+#                         EWC HELPER FUNCTIONS
+# ----------------------------------------------------------------------
+def compute_fisher_information(model,
+                               inputs,
+                               labels,
+                               batch_size: int = 64) -> Dict[str, tf.Tensor]:
+    """
+    Approximates the diagonal of the Fisher Information Matrix for EWC.
+    For speed we use the squared gradients of the mini‑batch loss.
+
+    Returns
+    -------
+    Dict[str, tf.Tensor]
+        Mapping from variable name to Fisher diagonal estimates
+        (same shape as variable tensor, on current device).
+    """
+    # Create an empty accumulator
+    fisher = {v.name: tf.zeros_like(v, dtype=tf.float32)
+              for v in model.trainable_weights}
+
+    dataset = tf.data.Dataset.from_tensor_slices((inputs, labels)) \
+                             .batch(batch_size, drop_remainder=False)
+
+    n_batches = 0
+    for x_b, y_b in dataset:
+        n_batches += 1
+        with tf.GradientTape() as tape:
+            preds = model(x_b, training=False)
+            # NOTE:  Mean‑squared‑error is used; adjust if you use another loss
+            batch_loss = tf.keras.losses.mean_squared_error(y_b, preds)
+            batch_loss = tf.reduce_mean(batch_loss)
+
+        grads = tape.gradient(batch_loss, model.trainable_weights)
+        for v, g in zip(model.trainable_weights, grads):
+            if g is None:   # just in case
+                continue
+            fisher[v.name] += tf.square(g)
+
+    # Average over #batches
+    for k in fisher:
+        fisher[k] /= float(max(n_batches, 1))
+    return fisher
+
+def apply_ewc_penalty(model,
+                      theta_star: Dict[str, tf.Tensor],
+                      fisher: Dict[str, tf.Tensor],
+                      lambda_ewc: float = 1000.0):
+    """
+    Adds EWC regularisation term  λ * Σ_i F_i (θ_i − θ*_i)^2  to `model.losses`.
+    Call *after* the model is built / weights loaded but *before*
+    `model.compile(...)`  or `model.fit(...)`.
+    """
+    for v in model.trainable_weights:
+        if v.name not in theta_star:
+            continue
+        penalty = lambda_ewc * fisher[v.name] * tf.square(v - theta_star[v.name])
+        # Keras will add this term to the total loss automatically
+        model.add_loss(tf.reduce_sum(penalty))
 
 # ======================================================================
 #                      ONLINE‑LEARNING HELPER
@@ -72,8 +134,20 @@ def run_online_learning(
         `params`.
     asset_class_dictionary : dict[str, str] | None
         Needed only if you want to post‑process metrics per asset class.
+
+    Notes
+    -----
+    Supports Elastic Weight Consolidation (EWC) regularization if
+    `params` contains `"lambda_ewc"` (float).
     """
     
+    # --------------------  EWC state  ---------------------------------
+    # λ is read from `params`, default = 1000.0
+    lambda_ewc = float(params.get("lambda_ewc", 1000.0))
+    # These two dicts will be updated after every window
+    ewc_fisher: Dict[str, tf.Tensor] = {}
+    theta_star: Dict[str, tf.Tensor] = {}
+
     output_dir = Path("results") / experiment_name
 
     # ------------------------------------------------------------------
@@ -143,6 +217,14 @@ def run_online_learning(
             },
         )
         model = dmn.load_model(params)
+
+        # --------------------------------------------------------------
+        # (Optional) add EWC penalty based on previous windows
+        # --------------------------------------------------------------
+        if theta_star:          # empty on first window
+            apply_ewc_penalty(model, theta_star, ewc_fisher, lambda_ewc)
+            # Re‑compile so the added regularisation is respected
+            model.compile(optimizer=model.optimizer, loss=model.loss)
     
         #TODO checkpoint -> need to fix
         print(f"hp size: {hp_minibatch_size}")
@@ -161,6 +243,26 @@ def run_online_learning(
             verbose=0,
             shuffle=False,  # keep temporal order for online learning
         )
+
+        # --------------------------------------------------------------
+        # (EWC)  Compute & accumulate Fisher after this window
+        # --------------------------------------------------------------
+        new_fisher = compute_fisher_information(
+            model,
+            train_inputs,
+            train_labels,
+            batch_size=hp_minibatch_size,
+        )
+
+        # Exponential moving‑average merge (α = 0.1)
+        if not ewc_fisher:
+            ewc_fisher = {k: tf.identity(v) for k, v in new_fisher.items()}
+        else:
+            for k in ewc_fisher:
+                ewc_fisher[k] = 0.9 * ewc_fisher[k] + 0.1 * new_fisher[k]
+
+        # Snapshot current parameters θ*
+        theta_star = {v.name: tf.identity(v) for v in model.trainable_weights}
 
         # --------------------------------------------------------------
         # 3b) Evaluate (Sharpe on this window)

@@ -627,7 +627,7 @@ def run_all_windows(
             changepoint_lbws,
             asset_class_dictionary=asset_class_dictionary,
             hp_minibatch_size=hp_minibatch_size,
-            best_hp_path="./results/experiment_binance_100assets_tft_cpnone_len63_notime_div_v1/2022-2023/hyperparameters.json",
+            best_hp_path="./results/experiment_binance_100assets_tft_cpnone_len63_notime_div_v2/2023-2025/hyperparameters.json",
             skip_hp_search=True
             # To reuse existing hyperparameters, pass e.g.:
             # best_hp_path="path/to/hyperparameters.json", skip_hp_search=True

@@ -35,7 +35,7 @@ params["continual_training"] = True
 params["lambda_ewc"] = "auto"
 # target ratio of (EWC penalty) : (task loss) ≈ 0.5
 params["lambda_ewc_target_ratio"] = 0.5
-best_hp = load_best_hp("results/experiment_binance_100assets_tft_cpnone_len63_notime_div_v2/hyperparameters.json")
+best_hp = load_best_hp("results/experiment_binance_100assets_tft_cpnone_len63_notime_div_v2/2023-2025/hyperparameters.json")
 
 params.update(best_hp)
 

@@ -7,6 +7,8 @@ import json
 from mom_trans.classical_strategies import calc_performance_metrics
 from typing import Tuple, List, Dict
 from mom_trans.momentum_transformer import TftDeepMomentumNetworkModel
+ # Loss used when model is loaded without a compiled loss
+from mom_trans.deep_momentum_network import SharpeLoss
 from mom_trans.online_inputs import ModelFeatures
 # --- Added for Elastic‑Weight‑Consolidation --------------------------
 import tensorflow as tf
@@ -44,6 +46,7 @@ def compute_fisher_information(model,
         Mapping from variable name to Fisher diagonal estimates
         (same shape as variable tensor, on current device).
     """
+    
     # Create an empty accumulator
     fisher = {v.name: tf.zeros_like(v, dtype=tf.float32)
               for v in model.trainable_weights}
@@ -56,14 +59,19 @@ def compute_fisher_information(model,
         n_batches += 1
         with tf.GradientTape() as tape:
             preds = model(x_b, training=False)
-            # NOTE:  Mean‑squared‑error is used; adjust if you use another loss
-            batch_loss = tf.keras.losses.mean_squared_error(y_b, preds)
+            sharpe_loss = SharpeLoss(output_size=preds.shape[-1])
+            batch_loss = sharpe_loss(y_b, preds)
             batch_loss = tf.reduce_mean(batch_loss)
 
         grads = tape.gradient(batch_loss, model.trainable_weights)
+        print(f"g length: {len(grads)}")
         for v, g in zip(model.trainable_weights, grads):
-            if g is None:   # just in case
+            if g is None:
                 continue
+            
+            if fisher[v.name].shape != g.shape:
+                continue
+            
             fisher[v.name] += tf.square(g)
 
     # Average over #batches
@@ -110,8 +118,17 @@ def estimate_lambda_ewc(model,
     # ---- 1) penalty value with λ=1 ---------------------------------
     penalty_val = 0.0
     for v in model.trainable_weights:
-        if v.name not in fisher:
+        # must exist in previous Fisher AND snapshot dict
+        if v.name not in fisher or v.name not in theta_star:
             continue
+
+        # skip if any shape mismatch
+        if (theta_star[v.name].shape != v.shape):
+            print(f"SKIP: unmatched")
+            print(f"SKIP: c1: {theta_star[v.name].shape}")
+            print(f"SKIP: c2: {v.shape}")
+            continue
+
         penalty_val += tf.reduce_sum(
             fisher[v.name] * tf.square(v - theta_star[v.name])
         )
@@ -193,15 +210,10 @@ def run_online_learning(
     """
 
     # --------------------  EWC state  ---------------------------------
-    raw_lambda = params.get("lambda_ewc", "auto")   # "auto" triggers heuristic
-    auto_lambda = (isinstance(raw_lambda, str) and raw_lambda.lower() == "auto")
-    lambda_ewc: float | None
-    if auto_lambda:
-        lambda_ewc = None            # will be estimated after first window
-    else:
-        lambda_ewc = float(raw_lambda)
-
-    desired_ratio = float(params.get("lambda_ewc_target_ratio", 0.5))
+    # Fixed λ_EWC = 100  (no automatic tuning)
+    lambda_ewc: float = 100.0
+    auto_lambda = False           # disables heuristic estimation branch
+    desired_ratio = 0.5           # unused when auto‑tuning is off
     ewc_fisher: Dict[str, tf.Tensor] = {}
     theta_star: Dict[str, tf.Tensor] = {}
 
@@ -248,21 +260,22 @@ def run_online_learning(
             time_features=False,
             lags=None,
             asset_class_dictionary=asset_class_dictionary,
-            static_ticker_type_feature = True,
         )
-        print(f"HOPE PASS HERE")
 
         #TODO 검증필요
         # We treat the same data twice:
         train_data  = features.train
         test_data   = features.test_fixed     # identical slice
 
+        # Explicitly unpack once here so objects exist for potential λ‑estimate
+        train_inputs, train_labels, train_weights, _, _ = ModelFeatures._unpack(train_data)
+
         # --------------------------------------------------------------
         # 3a) Continue training
         # --------------------------------------------------------------
         dmn = TftDeepMomentumNetworkModel(
             project_name     = experiment_name,
-            hp_directory        = output_dir / "hp",
+            hp_directory        = output_dir / "2023-2025" / "hp",
             hp_minibatch_size   = [params["batch_size"]],
             **params,
             **features.input_params,
@@ -273,36 +286,23 @@ def run_online_learning(
                 "num_heads": 4,  # TODO to fixed params
             },
         )
-        model = dmn.load_model(params)
+        model = dmn.load_model(params, weights_path="results/experiment_binance_100assets_tft_cpnone_len63_notime_div_v2/2023-2025/best/checkpoints/checkpoint.weights.h5")
+        model.compile(optimizer="adam", loss=SharpeLoss(output_size=params.get("output_size", 1)))
 
         # --------------------------------------------------------------
         # (Optional) add / tune EWC penalty based on previous windows
         # --------------------------------------------------------------
         if theta_star:
-            if auto_lambda and lambda_ewc is None:
-                lambda_ewc = estimate_lambda_ewc(
-                    model,
-                    theta_star,
-                    ewc_fisher,
-                    train_inputs,
-                    train_labels,
-                    desired_ratio=desired_ratio,
-                    batch_size=hp_minibatch_size,
-                )
-                print(f"[EWC] Auto‑tuned λ = {lambda_ewc:.3e} (target ratio {desired_ratio})")
-
             if lambda_ewc is not None:
                 apply_ewc_penalty(model, theta_star, ewc_fisher, lambda_ewc)
                 # Re‑compile so the added regularisation is respected
-                model.compile(optimizer=model.optimizer, loss=model.loss)
+                model.compile(optimizer=model.optimizer, loss=SharpeLoss(output_size=params.get("output_size", 1)))
     
         #TODO checkpoint -> need to fix
         print(f"hp size: {hp_minibatch_size}")
         # --------------------------------------------------------------
         # 3a) Continue training (online fine‑tuning)
         # --------------------------------------------------------------
-        # Explicitly unpack inputs, labels, and sample‑weights
-        train_inputs, train_labels, train_weights, _, _ = ModelFeatures._unpack(train_data)
 
         model.fit(
             x=train_inputs,
@@ -362,7 +362,7 @@ def run_online_learning(
         with open(out_json, "w") as fp:
             json.dump(metrics, fp, indent=2, default=float)
 
-        model.save_weights(output_dir / f"ckpt_window{w:04d}.weights.h5")
+        model.save_weights(os.path.join(output_dir, "2023-2025", "best", "checkpoints", "checkpoint.weights.h5"))
 
     # ------------------------------------------------------------------
     # 4) Save concatenated results to disk

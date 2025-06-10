@@ -324,9 +324,6 @@ class ModelFeatures:
             output[real_inputs] = self._real_scalers.transform(df[real_inputs].values)
 
         # Format categorical inputs
-        print(f"#30 Here categorical_inputs : {categorical_inputs}")   
-        print(f"#30 DF?? : {df.columns}")
-        print(f"#30 DF?? : {df.head(5)}")
         for col in categorical_inputs:
             string_df = df[col].apply(str)
             output[col] = self._cat_scalers[col].transform(string_df)

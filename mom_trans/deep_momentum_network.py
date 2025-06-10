@@ -112,7 +112,7 @@ class SharpeValidationLoss(keras.callbacks.Callback):
             if self.patience_counter >= self.early_stopping_patience:
                 self.stopped_epoch = epoch
                 self.model.stop_training = True
-                self.model.load_weights(self.weights_save_location)
+                self.model.load_weights(self.weights_save_location, skip_mismatch=True)
         logs["sharpe"] = sharpe  # for keras tuner
         print(f"\nval_sharpe {logs['sharpe']}")
 
@@ -317,10 +317,13 @@ class DeepMomentumNetworkModel(ABC):
     def load_model(
         self,
         hyperparameters,
+        weights_path
     ) -> tf.keras.Model:
         hyp = kt.engine.hyperparameters.HyperParameters()
         hyp.values = hyperparameters
-        return self.tuner.hypermodel.build(hyp)
+        model = self.tuner.hypermodel.build(hyp)
+        model.load_weights(weights_path,  skip_mismatch=True)
+        return model
 
     def fit(
         self,
@@ -358,7 +361,7 @@ class DeepMomentumNetworkModel(ABC):
                 callbacks=callbacks,
                 shuffle=True,
             )
-            model.load_weights(os.path.join(temp_folder, "checkpoint.weights.h5"))
+            model.load_weights(os.path.join(temp_folder, "checkpoint.weights.h5"),  skip_mismatch=True)
         else:
             callbacks = [
                 tf.keras.callbacks.EarlyStopping(

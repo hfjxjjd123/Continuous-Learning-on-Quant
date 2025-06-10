@@ -11,7 +11,54 @@ from mom_trans.momentum_transformer import TftDeepMomentumNetworkModel
 from mom_trans.deep_momentum_network import SharpeLoss
 from mom_trans.online_inputs import ModelFeatures
 # --- Added for Elastic‑Weight‑Consolidation --------------------------
+
 import tensorflow as tf
+
+# ----------------------------------------------------------------------
+# Custom loss builder: SharpeLoss + fixed EWC penalty (λ=100)
+# ----------------------------------------------------------------------
+def make_sharpe_ewc_loss(model,
+                         theta_star: Dict[str, tf.Tensor],
+                         fisher: Dict[str, tf.Tensor],
+                         lambda_ewc: float = 100.0):
+    """
+    Builds a composite loss: SharpeLoss + λ · Σ_i F_i (θ_i − θ*_i)².
+
+    Parameters
+    ----------
+    model : tf.keras.Model
+        Current model whose weights are being updated.
+    theta_star : dict[str, tf.Tensor]
+        Snapshot of previous task parameters.
+    fisher : dict[str, tf.Tensor]
+        Diagonal Fisher Information estimates.
+    lambda_ewc : float, default 100.0
+        Regularisation strength.
+
+    Returns
+    -------
+    Callable
+        A Keras‑compatible loss(y_true, y_pred) function.
+    """
+    sharpe_loss_fn = SharpeLoss(output_size=model.output_shape[-1])
+
+    # Pre‑cache valid (F_i, θ*_i) pairs whose shapes match the variable
+    penalty_terms: list[tuple[tf.Tensor, tf.Tensor]] = []
+    for v in model.trainable_weights:
+        if v.name in theta_star and v.name in fisher:
+            if theta_star[v.name].shape == v.shape:
+                penalty_terms.append((fisher[v.name], theta_star[v.name]))
+
+    def loss(y_true, y_pred):
+        base_loss = sharpe_loss_fn(y_true, y_pred)
+        penalty = 0.0
+        for v, (Fi, theta_i) in zip(model.trainable_weights, penalty_terms):
+            if v.shape == Fi.shape:
+                penalty += tf.reduce_sum(Fi * tf.square(v - theta_i))
+        return base_loss + lambda_ewc * penalty
+
+    return loss
+
 
 def _get_directory_name(
     experiment_name: str
@@ -79,79 +126,79 @@ def compute_fisher_information(model,
         fisher[k] /= float(max(n_batches, 1))
     return fisher
 
-def apply_ewc_penalty(model,
-                      theta_star: Dict[str, tf.Tensor],
-                      fisher: Dict[str, tf.Tensor],
-                      lambda_ewc: float = 1000.0):
-    """
-    Adds EWC regularisation term  λ * Σ_i F_i (θ_i − θ*_i)^2  to `model.losses`.
-    Call *after* the model is built / weights loaded but *before*
-    `model.compile(...)`  or `model.fit(...)`.
-    """
-    for v in model.trainable_weights:
-        if v.name not in theta_star:
-            continue
-        penalty = lambda_ewc * fisher[v.name] * tf.square(v - theta_star[v.name])
-        # Keras will add this term to the total loss automatically
-        model.add_loss(tf.reduce_sum(penalty))
+# def apply_ewc_penalty(model,
+#                       theta_star: Dict[str, tf.Tensor],
+#                       fisher: Dict[str, tf.Tensor],
+#                       lambda_ewc: float = 100.0):
+#     """
+#     Adds EWC regularisation term  λ * Σ_i F_i (θ_i − θ*_i)^2  to `model.losses`.
+#     Call *after* the model is built / weights loaded but *before*
+#     `model.compile(...)`  or `model.fit(...)`.
+#     """
+#     print(f"len of v : {len(model.trainable_weights)}")
+#     counter = 1
+#     for v in model.trainable_weights:
+#         if v.name not in theta_star:
+#             counter += 1
+#             continue
+#         penalty = lambda_ewc * fisher[v.name] * tf.square(v - theta_star[v.name])
+#         # Keras will add this term to the total loss automatically
+#         model.add_loss(tf.reduce_sum(penalty))
 
 # ----------------------------------------------------------------------
 # Heuristic lambda estimation for EWC
 # ----------------------------------------------------------------------
-def estimate_lambda_ewc(model,
-                        theta_star: Dict[str, tf.Tensor],
-                        fisher: Dict[str, tf.Tensor],
-                        inputs,
-                        labels,
-                        desired_ratio: float = 0.5,
-                        batch_size: int = 64) -> float:
-    """
-    Fast heuristic (히스테릭) method to choose λ_EWC.
-    Computes:
-        λ* ≈  desired_ratio ×  (L_orig / penalty_λ=1)
-    where
-        L_orig      = mean task‑loss on current window
-        penalty_λ=1 = Σ_i F_i (θ_i − θ*_i)^2  (with λ=1)
+# def estimate_lambda_ewc(model,
+#                         theta_star: Dict[str, tf.Tensor],
+#                         fisher: Dict[str, tf.Tensor],
+#                         inputs,
+#                         labels,
+#                         desired_ratio: float = 0.5,
+#                         batch_size: int = 64) -> float:
+#     """
+#     Fast heuristic (히스테릭) method to choose λ_EWC.
+#     Computes:
+#         λ* ≈  desired_ratio ×  (L_orig / penalty_λ=1)
+#     where
+#         L_orig      = mean task‑loss on current window
+#         penalty_λ=1 = Σ_i F_i (θ_i − θ*_i)^2  (with λ=1)
 
-    If either value is 0 → returns default 1e3.
-    """
-    # ---- 1) penalty value with λ=1 ---------------------------------
-    penalty_val = 0.0
-    for v in model.trainable_weights:
-        # must exist in previous Fisher AND snapshot dict
-        if v.name not in fisher or v.name not in theta_star:
-            continue
+#     If either value is 0 → returns default 1e3.
+#     """
+#     # ---- 1) penalty value with λ=1 ---------------------------------
+#     penalty_val = 0.0
+#     for v in model.trainable_weights:
+#         # must exist in previous Fisher AND snapshot dict
+#         if v.name not in fisher or v.name not in theta_star:
+#             continue
 
-        # skip if any shape mismatch
-        if (theta_star[v.name].shape != v.shape):
-            print(f"SKIP: unmatched")
-            print(f"SKIP: c1: {theta_star[v.name].shape}")
-            print(f"SKIP: c2: {v.shape}")
-            continue
+#         # skip if any shape mismatch
+#         if (theta_star[v.name].shape != v.shape):
+#             continue
 
-        penalty_val += tf.reduce_sum(
-            fisher[v.name] * tf.square(v - theta_star[v.name])
-        )
-    penalty_val = float(penalty_val.numpy())
+#         penalty_val += tf.reduce_sum(
+#             fisher[v.name] * tf.square(v - theta_star[v.name])
+#         )
+#     penalty_val = float(penalty_val.numpy())
 
-    # ---- 2) baseline task‑loss -------------------------------------
-    ds = tf.data.Dataset.from_tensor_slices((inputs, labels)).batch(batch_size)
-    loss_fn = model.loss
-    loss_sum = 0.0
-    n_batches = 0
-    for x_b, y_b in ds:
-        preds = model(x_b, training=False)
-        batch_loss = tf.reduce_mean(loss_fn(y_b, preds))
-        loss_sum += float(batch_loss.numpy())
-        n_batches += 1
-    L_orig = loss_sum / max(n_batches, 1)
+#     # ---- 2) baseline task‑loss -------------------------------------
+#     ds = tf.data.Dataset.from_tensor_slices((inputs, labels)).batch(batch_size)
+#     loss_fn = model.loss
+#     loss_sum = 0.0
+#     n_batches = 0
+#     for x_b, y_b in ds:
+#         preds = model(x_b, training=False)
+#         batch_loss = tf.reduce_mean(loss_fn(y_b, preds))
+#         loss_sum += float(batch_loss.numpy())
+#         n_batches += 1
+#     L_orig = loss_sum / max(n_batches, 1)
 
-    if penalty_val == 0 or L_orig == 0:
-        return 1e3  # fallback
+#     if penalty_val == 0 or L_orig == 0:
+#         return 1e3  # fallback
 
-    lambda_star = desired_ratio * (L_orig / penalty_val)
-    # Clamp to sensible positive range
-    return float(max(lambda_star, 1e-2))
+#     lambda_star = desired_ratio * (L_orig / penalty_val)
+#     # Clamp to sensible positive range
+#     return float(max(lambda_star, 1e-2))
 
 # ======================================================================
 #                      ONLINE‑LEARNING HELPER
@@ -212,8 +259,7 @@ def run_online_learning(
     # --------------------  EWC state  ---------------------------------
     # Fixed λ_EWC = 100  (no automatic tuning)
     lambda_ewc: float = 100.0
-    auto_lambda = False           # disables heuristic estimation branch
-    desired_ratio = 0.5           # unused when auto‑tuning is off
+    auto_lambda = False
     ewc_fisher: Dict[str, tf.Tensor] = {}
     theta_star: Dict[str, tf.Tensor] = {}
 
@@ -237,7 +283,6 @@ def run_online_learning(
     # ------------------------------------------------------------------
     aggregate_results = []
     for w in range(n_windows):
-        print(f"#FINAL w now: {w}")
         start = w * delta
         end   = start + window_size
         train_window = full_df.iloc[start:end].copy()
@@ -286,20 +331,26 @@ def run_online_learning(
                 "num_heads": 4,  # TODO to fixed params
             },
         )
-        model = dmn.load_model(params, weights_path="results/experiment_binance_100assets_tft_cpnone_len63_notime_div_v2/2023-2025/best/checkpoints/checkpoint.weights.h5")
-        model.compile(optimizer="adam", loss=SharpeLoss(output_size=params.get("output_size", 1)))
-
+        model = dmn.load_model(
+            params,
+            weights_path="results/experiment_binance_100assets_tft_cpnone_len63_notime_div_v2/2023-2025/best/checkpoints/checkpoint.weights.h5"
+        )
         # --------------------------------------------------------------
-        # (Optional) add / tune EWC penalty based on previous windows
+        # (EWC) compile with Sharpe + λ·EWC penalty **if** previous task exists
         # --------------------------------------------------------------
         if theta_star:
-            if lambda_ewc is not None:
-                apply_ewc_penalty(model, theta_star, ewc_fisher, lambda_ewc)
-                # Re‑compile so the added regularisation is respected
-                model.compile(optimizer=model.optimizer, loss=SharpeLoss(output_size=params.get("output_size", 1)))
+            combined_loss = make_sharpe_ewc_loss(
+                model,
+                theta_star,
+                ewc_fisher,
+                lambda_ewc=lambda_ewc,   # fixed 100
+            )
+            model.compile(optimizer="adam", loss=combined_loss)
+        else:
+            model.compile(optimizer="adam", loss=SharpeLoss(output_size=params.get("output_size", 1)))
     
         #TODO checkpoint -> need to fix
-        print(f"hp size: {hp_minibatch_size}")
+        # print(f"hp size: {hp_minibatch_size}")
         # --------------------------------------------------------------
         # 3a) Continue training (online fine‑tuning)
         # --------------------------------------------------------------

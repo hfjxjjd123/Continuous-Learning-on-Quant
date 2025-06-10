@@ -332,6 +332,7 @@ class DeepMomentumNetworkModel(ABC):
         hyperparameters,
         temp_folder: str,
     ):
+        print("#60 IS IT HIT?")
         data, labels, active_flags, _, _ = ModelFeatures._unpack(train_data)
         val_data, val_labels, val_flags, _, val_time = ModelFeatures._unpack(valid_data)
 

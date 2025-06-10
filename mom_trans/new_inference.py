@@ -43,18 +43,17 @@ def make_sharpe_ewc_loss(model,
     sharpe_loss_fn = SharpeLoss(output_size=model.output_shape[-1])
 
     # Pre‑cache valid (F_i, θ*_i) pairs whose shapes match the variable
-    penalty_terms: list[tuple[tf.Tensor, tf.Tensor]] = []
+    penalty_terms: list[tuple[tf.Variable, tf.Tensor, tf.Tensor]] = []
     for v in model.trainable_weights:
         if v.name in theta_star and v.name in fisher:
             if theta_star[v.name].shape == v.shape:
-                penalty_terms.append((fisher[v.name], theta_star[v.name]))
+                penalty_terms.append((v, fisher[v.name], theta_star[v.name]))
 
     def loss(y_true, y_pred):
         base_loss = sharpe_loss_fn(y_true, y_pred)
         penalty = 0.0
-        for v, (Fi, theta_i) in zip(model.trainable_weights, penalty_terms):
-            if v.shape == Fi.shape:
-                penalty += tf.reduce_sum(Fi * tf.square(v - theta_i))
+        for v, Fi, theta_i in penalty_terms:
+            penalty += tf.reduce_sum(Fi * tf.square(v - theta_i))
         return base_loss + lambda_ewc * penalty
 
     return loss
@@ -333,7 +332,7 @@ def run_online_learning(
         )
         model = dmn.load_model(
             params,
-            weights_path="results/experiment_binance_100assets_tft_cpnone_len63_notime_div_v2/2023-2025/best/checkpoints/checkpoint.weights.h5"
+            weights_path= output_dir/"2023-2025"/"best"/"checkpoints"/"checkpoint.weights.h5"
         )
         # --------------------------------------------------------------
         # (EWC) compile with Sharpe + λ·EWC penalty **if** previous task exists

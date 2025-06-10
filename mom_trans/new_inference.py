@@ -148,57 +148,57 @@ def compute_fisher_information(model,
 # ----------------------------------------------------------------------
 # Heuristic lambda estimation for EWC
 # ----------------------------------------------------------------------
-# def estimate_lambda_ewc(model,
-#                         theta_star: Dict[str, tf.Tensor],
-#                         fisher: Dict[str, tf.Tensor],
-#                         inputs,
-#                         labels,
-#                         desired_ratio: float = 0.5,
-#                         batch_size: int = 64) -> float:
-#     """
-#     Fast heuristic (히스테릭) method to choose λ_EWC.
-#     Computes:
-#         λ* ≈  desired_ratio ×  (L_orig / penalty_λ=1)
-#     where
-#         L_orig      = mean task‑loss on current window
-#         penalty_λ=1 = Σ_i F_i (θ_i − θ*_i)^2  (with λ=1)
+def estimate_lambda_ewc(model,
+                        theta_star: Dict[str, tf.Tensor],
+                        fisher: Dict[str, tf.Tensor],
+                        inputs,
+                        labels,
+                        desired_ratio: float = 0.5,
+                        batch_size: int = 64) -> float:
+    """
+    Fast heuristic (히스테릭) method to choose λ_EWC.
+    Computes:
+        λ* ≈  desired_ratio ×  (L_orig / penalty_λ=1)
+    where
+        L_orig      = mean task‑loss on current window
+        penalty_λ=1 = Σ_i F_i (θ_i − θ*_i)^2  (with λ=1)
 
-#     If either value is 0 → returns default 1e3.
-#     """
-#     # ---- 1) penalty value with λ=1 ---------------------------------
-#     penalty_val = 0.0
-#     for v in model.trainable_weights:
-#         # must exist in previous Fisher AND snapshot dict
-#         if v.name not in fisher or v.name not in theta_star:
-#             continue
+    If either value is 0 → returns default 1e3.
+    """
+    # ---- 1) penalty value with λ=1 ---------------------------------
+    penalty_val = 0.0
+    for v in model.trainable_weights:
+        # must exist in previous Fisher AND snapshot dict
+        if v.name not in fisher or v.name not in theta_star:
+            continue
 
-#         # skip if any shape mismatch
-#         if (theta_star[v.name].shape != v.shape):
-#             continue
+        # skip if any shape mismatch
+        if (theta_star[v.name].shape != v.shape):
+            continue
 
-#         penalty_val += tf.reduce_sum(
-#             fisher[v.name] * tf.square(v - theta_star[v.name])
-#         )
-#     penalty_val = float(penalty_val.numpy())
+        penalty_val += tf.reduce_sum(
+            fisher[v.name] * tf.square(v - theta_star[v.name])
+        )
+    penalty_val = float(penalty_val.numpy())
 
-#     # ---- 2) baseline task‑loss -------------------------------------
-#     ds = tf.data.Dataset.from_tensor_slices((inputs, labels)).batch(batch_size)
-#     loss_fn = model.loss
-#     loss_sum = 0.0
-#     n_batches = 0
-#     for x_b, y_b in ds:
-#         preds = model(x_b, training=False)
-#         batch_loss = tf.reduce_mean(loss_fn(y_b, preds))
-#         loss_sum += float(batch_loss.numpy())
-#         n_batches += 1
-#     L_orig = loss_sum / max(n_batches, 1)
+    # ---- 2) baseline task‑loss -------------------------------------
+    ds = tf.data.Dataset.from_tensor_slices((inputs, labels)).batch(batch_size)
+    loss_fn = model.loss
+    loss_sum = 0.0
+    n_batches = 0
+    for x_b, y_b in ds:
+        preds = model(x_b, training=False)
+        batch_loss = tf.reduce_mean(loss_fn(y_b, preds))
+        loss_sum += float(batch_loss.numpy())
+        n_batches += 1
+    L_orig = loss_sum / max(n_batches, 1)
 
-#     if penalty_val == 0 or L_orig == 0:
-#         return 1e3  # fallback
+    if penalty_val == 0 or L_orig == 0:
+        return 1e3  # fallback
 
-#     lambda_star = desired_ratio * (L_orig / penalty_val)
-#     # Clamp to sensible positive range
-#     return float(max(lambda_star, 1e-2))
+    lambda_star = desired_ratio * (L_orig / penalty_val)
+    # Clamp to sensible positive range
+    return float(max(lambda_star, 1e-2))
 
 # ======================================================================
 #                      ONLINE‑LEARNING HELPER
@@ -257,11 +257,12 @@ def run_online_learning(
     """
 
     # --------------------  EWC state  ---------------------------------
-    # Fixed λ_EWC = 100  (no automatic tuning)
-    lambda_ewc: float = 100.0
-    auto_lambda = False
     ewc_fisher: Dict[str, tf.Tensor] = {}
     theta_star: Dict[str, tf.Tensor] = {}
+    
+    # 새로운 하이퍼파라미터: 태스크 손실과 EWC 패널티의 목표 비율
+    # 이 값은 params 딕셔너리를 통해 전달받거나 여기에 직접 설정할 수 있습니다.
+    lambda_ewc_target_ratio = params.get("lambda_ewc_target_ratio", 0.5)
 
     output_dir = Path("results") / experiment_name
 
@@ -339,11 +340,23 @@ def run_online_learning(
         # (EWC) compile with Sharpe + λ·EWC penalty **if** previous task exists
         # --------------------------------------------------------------
         if theta_star:
+            print(f"[Window {w}] Estimating lambda_ewc...")
+            dynamic_lambda = estimate_lambda_ewc(
+                model=model,
+                theta_star=theta_star,
+                fisher=ewc_fisher,
+                inputs=train_inputs,
+                labels=train_labels,
+                desired_ratio=lambda_ewc_target_ratio,
+                batch_size=hp_minibatch_size
+            )
+            print(f"  -> Estimated lambda_ewc = {dynamic_lambda:.4f}")
+            
             combined_loss = make_sharpe_ewc_loss(
                 model,
                 theta_star,
                 ewc_fisher,
-                lambda_ewc=lambda_ewc,   # fixed 100
+                lambda_ewc=dynamic_lambda,   # fixed 100
             )
             model.compile(optimizer="adam", loss=combined_loss)
         else:

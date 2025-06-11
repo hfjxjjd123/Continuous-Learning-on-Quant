@@ -281,7 +281,7 @@ def run_online_learning(
     # 3) Iterate over sliding windows
     # ------------------------------------------------------------------
     aggregate_results = []
-    for w in range(n_windows):
+    for w in range(9, n_windows):
         start = w * delta
         end   = start + window_size
         train_window = full_df.iloc[start:end].copy()

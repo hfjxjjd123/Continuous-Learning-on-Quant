@@ -65,12 +65,18 @@ def _get_directory_name(
 ) -> str:
     return os.path.join("results", experiment_name)
 
-def _load_csv(path: str, time_col: str = "Time") -> pd.DataFrame:
-    # Time 컬럼에서 Timezone을 제거하고, Unix timestamp (초 단위)로 변환
-
-    df = pd.read_csv(path, index_col=0)
+def _load_csv(path: str, start, nrows, names, time_col: str = "Time") -> pd.DataFrame:
+# Time 컬럼에서 Timezone을 제거하고, Unix timestamp (초 단위)로 변환
+    df = pd.read_csv(
+            path,
+            skiprows= start + 1,
+            nrows=nrows,
+            header=None,
+            names=names,
+            index_col=0
+        )
     df.index = pd.to_datetime(df.index)
-    
+
     if "Time" not in df.columns:
         print("NO TIME INSIDE")
         df['Time'] = df.index
@@ -200,9 +206,6 @@ def estimate_lambda_ewc(model,
     # Clamp to sensible positive range
     return float(max(lambda_star, 1e-2))
 
-# ======================================================================
-#                      ONLINE‑LEARNING HELPER
-# ======================================================================
 def run_online_learning(
     experiment_name: str,
     features_file_path: str,
@@ -213,81 +216,36 @@ def run_online_learning(
     hp_minibatch_size = 64,
     asset_class_dictionary = Dict[str, str]
 ):
-    """
-    Continues training a *pre‑trained* DeepMomentumNetwork model in an
-    online fashion.
-
-    The function:
-    1. Loads **one** model from `params`.
-    2. Slides through the dataset with `window_size` and `delta`.
-    3. On each window it:
-       - builds ModelFeatures,
-       - *continues* training (`model.fit`) for `fine_tune_epochs`,
-       - evaluates the window (Sharpe etc.),
-       - saves the checkpoint & results.
-
-    Parameters
-    ----------
-    experiment_name : str
-        Folder name used by previous training run.  Checkpoints will be
-        written under `results/{experiment_name}/online/`.
-    features_file_path : str
-        CSV with all data (must contain **Time** and **symbol** cols).
-    params / params
-        Same dictionaries you would pass to `TftDeepMomentumNetworkModel`.
-        These are **not** modified.
-    window_size : int
-        Number of rows (time steps) inside each online window.
-    delta : int
-        Shift (in rows) between consecutive windows.
-    fine_tune_epochs : int, default 1
-        Extra epochs to train on each new window.
-    hp_minibatch_size : int | None
-        If given, use this batch‑size instead of the value inside
-        `params`.
-    asset_class_dictionary : dict[str, str] | None
-        Needed only if you want to post‑process metrics per asset class.
-
-    Notes
-    -----
-    Supports EWC if you pass:
-        "lambda_ewc": &lt;float&gt;            # fixed value
-        "lambda_ewc": "auto"               # fast heuristic tuning
-        "lambda_ewc_target_ratio": 0.5     # optional, default 0.5
-    """
-
-    # --------------------  EWC state  ---------------------------------
     ewc_fisher: Dict[str, tf.Tensor] = {}
     theta_star: Dict[str, tf.Tensor] = {}
-    
-    # 새로운 하이퍼파라미터: 태스크 손실과 EWC 패널티의 목표 비율
-    # 이 값은 params 딕셔너리를 통해 전달받거나 여기에 직접 설정할 수 있습니다.
     lambda_ewc_target_ratio = params.get("lambda_ewc_target_ratio", 0.5)
-
+    
     output_dir = Path("results") / experiment_name
 
-    # ------------------------------------------------------------------
-    # 1) Load the *full* dataframe once and sort by index
-    # ------------------------------------------------------------------
-    full_df = _load_csv(
-        features_file_path,
-        time_col="Time",
-    ).sort_index()
+    header = pd.read_csv(features_file_path, nrows=0).columns.tolist()
 
-    # Determine total number of steps and how many windows
-    total_steps = len(full_df)
+    total_steps = sum(1 for _ in open(features_file_path, 'r')) - 1
     n_windows = math.floor((total_steps - window_size) / delta) + 1
     print(f"n_windows: {n_windows}")
-
-    # ------------------------------------------------------------------
-    # 3) Iterate over sliding windows
-    # ------------------------------------------------------------------
     aggregate_results = []
+    
     for w in range(n_windows):
         start = w * delta
         end   = start + window_size
-        train_window = full_df.iloc[start:end].copy()
-        test_window = full_df.iloc[end: end+delta].copy()
+        train_window = _load_csv(
+            path=features_file_path,
+            start = start,
+            nrows=window_size,
+            names=header,
+            time_col="Time",
+        )
+        test_window = _load_csv(
+            path=features_file_path,
+            start = end,
+            nrows=delta,
+            names=header,
+            time_col="Time",
+        )
 
         # ----------------------------------------------------------------
         # Build ModelFeatures for *one* window

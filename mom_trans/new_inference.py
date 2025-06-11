@@ -247,10 +247,6 @@ def run_online_learning(
             time_col="Time",
         )
 
-        # ----------------------------------------------------------------
-        # Build ModelFeatures for *one* window
-        # ----------------------------------------------------------------
-        #TODO checkpoint2
         features = ModelFeatures(
             train_window,
             test_window,
@@ -265,18 +261,11 @@ def run_online_learning(
             lags=None,
             asset_class_dictionary=asset_class_dictionary,
         )
-
-        #TODO 검증필요
-        # We treat the same data twice:
+        
         train_data  = features.train
-        test_data   = features.test_fixed     # identical slice
-
-        # Explicitly unpack once here so objects exist for potential λ‑estimate
+        test_data   = features.test_fixed
         train_inputs, train_labels, train_weights, _, _ = ModelFeatures._unpack(train_data)
 
-        # --------------------------------------------------------------
-        # 3a) Continue training
-        # --------------------------------------------------------------
         dmn = TftDeepMomentumNetworkModel(
             project_name     = experiment_name,
             hp_directory        = output_dir / "2023-2025" / "hp",
@@ -294,9 +283,7 @@ def run_online_learning(
             params,
             weights_path=output_dir/"2023-2025"/"best"/"checkpoints"/"checkpoint.weights.h5"
         )
-        # --------------------------------------------------------------
-        # (EWC) compile with Sharpe + λ·EWC penalty **if** previous task exists
-        # --------------------------------------------------------------
+
         if theta_star:
             print(f"[Window {w}] Estimating lambda_ewc...")
             dynamic_lambda = estimate_lambda_ewc(
@@ -308,7 +295,6 @@ def run_online_learning(
                 desired_ratio=lambda_ewc_target_ratio,
                 batch_size=hp_minibatch_size
             )
-            print(f"  -> Estimated lambda_ewc = {dynamic_lambda:.4f}")
             
             combined_loss = make_sharpe_ewc_loss(
                 model,
@@ -319,12 +305,6 @@ def run_online_learning(
             model.compile(optimizer="adam", loss=combined_loss)
         else:
             model.compile(optimizer="adam", loss=SharpeLoss(output_size=params.get("output_size", 1)))
-    
-        #TODO checkpoint -> need to fix
-        # print(f"hp size: {hp_minibatch_size}")
-        # --------------------------------------------------------------
-        # 3a) Continue training (online fine‑tuning)
-        # --------------------------------------------------------------
 
         model.fit(
             x=train_inputs,
@@ -333,12 +313,9 @@ def run_online_learning(
             epochs=fine_tune_epochs,
             batch_size=hp_minibatch_size,
             verbose=0,
-            shuffle=False,  # keep temporal order for online learning
+            shuffle=False
         )
 
-        # --------------------------------------------------------------
-        # (EWC)  Compute & accumulate Fisher after this window
-        # --------------------------------------------------------------
         new_fisher = compute_fisher_information(
             model,
             train_inputs,
@@ -346,19 +323,15 @@ def run_online_learning(
             batch_size=hp_minibatch_size,
         )
 
-        # Exponential moving‑average merge (α = 0.1)
         if not ewc_fisher:
             ewc_fisher = {k: tf.identity(v) for k, v in new_fisher.items()}
         else:
             for k in ewc_fisher:
                 ewc_fisher[k] = 0.9 * ewc_fisher[k] + 0.1 * new_fisher[k]
 
-        # Snapshot current parameters θ*
         theta_star = {v.name: tf.identity(v) for v in model.trainable_weights}
 
-        # --------------------------------------------------------------
-        # 3b) Evaluate (Sharpe on this window)
-        # --------------------------------------------------------------
+
         res_df, sharpe = dmn.get_positions(
             test_data,
             model,
@@ -366,15 +339,9 @@ def run_online_learning(
         )
         res_df["window_id"] = w
         aggregate_results.append(res_df)
-
-        # --------------------------------------------------------------
-        # 3c) Store per‑window results & metrics
-        # --------------------------------------------------------------
-        # 3c‑1) save raw captured returns of this window
         out_csv = output_dir / f"captured_returns_window{w:04d}.csv"
         res_df.to_csv(out_csv, index=False)
 
-        # 3c‑2) calculate & save performance metrics for this window
         metrics = calc_performance_metrics(
             res_df.set_index("time"),
             metric_suffix=f"_window{w:04d}",
@@ -386,9 +353,6 @@ def run_online_learning(
 
         model.save_weights(os.path.join(output_dir, "2023-2025", "best", "checkpoints", "checkpoint.weights.h5"))
 
-    # ------------------------------------------------------------------
-    # 4) Save concatenated results to disk
-    # ------------------------------------------------------------------
     all_results = pd.concat(aggregate_results, ignore_index=True)
     all_results.to_csv(output_dir / "captured_returns_online.csv", index=False)
     print(f"[online‑learning] Finished. Results saved to "

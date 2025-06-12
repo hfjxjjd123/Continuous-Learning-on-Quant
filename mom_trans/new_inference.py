@@ -13,9 +13,12 @@ from mom_trans.online_inputs import ModelFeatures
 # --- Added for Elastic‑Weight‑Consolidation --------------------------
 
 import tensorflow as tf
+import pickle
+import numpy as np
+import gc
 
 # ----------------------------------------------------------------------
-# Custom loss builder: SharpeLoss + fixed EWC penalty (λ=100)
+# Custom loss builder: SharpeLoss  fixed EWC penalty (λ=100)
 # ----------------------------------------------------------------------
 def make_sharpe_ewc_loss(model,
                          theta_star: Dict[str, tf.Tensor],
@@ -254,16 +257,27 @@ def run_online_learning(
         "lambda_ewc": "auto"               # fast heuristic tuning
         "lambda_ewc_target_ratio": 0.5     # optional, default 0.5
     """
-
-    # --------------------  EWC state  ---------------------------------
-    # Fixed λ_EWC = 100  (no automatic tuning)
+    output_dir = Path("results") / experiment_name
+    
     lambda_ewc: float = 100.0
     auto_lambda = False
-    ewc_fisher: Dict[str, tf.Tensor] = {}
-    theta_star: Dict[str, tf.Tensor] = {}
 
-    output_dir = Path("results") / experiment_name
-
+    # Prepare EWC persistence
+    state_file = output_dir / "ewc_state.pkl"
+    if state_file.exists():
+        with open(state_file, "rb") as f:
+            saved = pickle.load(f)
+        ewc_fisher = {k: tf.convert_to_tensor(v, dtype=tf.float32)
+                      for k, v in saved["ewc_fisher"].items()}
+        theta_star = {k: tf.convert_to_tensor(v, dtype=tf.float32)
+                      for k, v in saved["theta_star"].items()}
+        start_window = saved.get("last_window", -1) + 1
+        print(f"Resuming from window {start_window}")
+    else:
+        ewc_fisher: Dict[str, tf.Tensor] = {}
+        theta_star: Dict[str, tf.Tensor] = {}
+        start_window = 0
+        
     # ------------------------------------------------------------------
     # 1) Load the *full* dataframe once and sort by index
     # ------------------------------------------------------------------
@@ -281,7 +295,7 @@ def run_online_learning(
     # 3) Iterate over sliding windows
     # ------------------------------------------------------------------
     aggregate_results = []
-    for w in range(n_windows):
+    for w in range(start_window, n_windows):
         start = w * delta
         end   = start + window_size
         train_window = full_df.iloc[start:end].copy()
@@ -413,6 +427,17 @@ def run_online_learning(
             json.dump(metrics, fp, indent=2, default=float)
 
         model.save_weights(os.path.join(output_dir, "2023-2025", "best", "checkpoints", "checkpoint.weights.h5"))
+        
+        to_save = {
+            "ewc_fisher":  {k: v.numpy() for k, v in ewc_fisher.items()},
+            "theta_star":  {k: v.numpy() for k, v in theta_star.items()},
+            "last_window": w,
+        }
+        with open(state_file, "wb") as f:
+            pickle.dump(to_save, f)
+        
+        gc.collect()
+        tf.keras.backend.clear_session()
 
     # ------------------------------------------------------------------
     # 4) Save concatenated results to disk

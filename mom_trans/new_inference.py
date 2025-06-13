@@ -23,7 +23,7 @@ import gc
 def make_sharpe_ewc_loss(model,
                          theta_star: Dict[str, tf.Tensor],
                          fisher: Dict[str, tf.Tensor],
-                         lambda_ewc: float = 100.0):
+                         lambda_ewc: float = 10.0):
     """
     Builds a composite loss: SharpeLoss + λ · Σ_i F_i (θ_i − θ*_i)².
 
@@ -35,7 +35,7 @@ def make_sharpe_ewc_loss(model,
         Snapshot of previous task parameters.
     fisher : dict[str, tf.Tensor]
         Diagonal Fisher Information estimates.
-    lambda_ewc : float, default 100.0
+    lambda_ewc : float, default 10.0
         Regularisation strength.
 
     Returns
@@ -259,7 +259,7 @@ def run_online_learning(
     """
     output_dir = Path("results") / experiment_name
     
-    lambda_ewc: float = 100.0
+    lambda_ewc: float = 10.0
     auto_lambda = False
 
     # Prepare EWC persistence
@@ -356,7 +356,7 @@ def run_online_learning(
                 model,
                 theta_star,
                 ewc_fisher,
-                lambda_ewc=lambda_ewc,   # fixed 100
+                lambda_ewc=lambda_ewc,   # fixed 10
             )
             model.compile(optimizer="adam", loss=combined_loss)
         else:

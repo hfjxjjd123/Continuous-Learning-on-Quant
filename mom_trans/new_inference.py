@@ -23,7 +23,7 @@ import gc
 def make_sharpe_ewc_loss(model,
                          theta_star: Dict[str, tf.Tensor],
                          fisher: Dict[str, tf.Tensor],
-                         lambda_ewc: float = 10.0):
+                         lambda_ewc: float = 1.0):
     """
     Builds a composite loss: SharpeLoss + λ · Σ_i F_i (θ_i − θ*_i)².
 
@@ -259,7 +259,7 @@ def run_online_learning(
     """
     output_dir = Path("results") / experiment_name
     
-    lambda_ewc: float = 10.0
+    lambda_ewc: float = 1.0
     auto_lambda = False
 
     # Prepare EWC persistence

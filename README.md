@@ -51,3 +51,123 @@ Will be made available soon.
 
 ## Subsequent work
 We also have a follow-up paper: [Few-Shot Learning Patterns in Financial Time-Series for Trend-Following Strategies](https://arxiv.org/abs/2310.10500)
+
+# DPA (Deep Portfolio Allocation)
+
+## 개요
+
+이 프로젝트는 딥러닝을 활용한 포트폴리오 할당 전략을 구현한 코드베이스입니다. 주요 특징으로는 Elastic Weight Consolidation (EWC)을 통한 온라인 학습과 동적 lambda 조정 기능이 포함되어 있습니다.
+
+## 주요 기능
+
+### 1. Elastic Weight Consolidation (EWC)
+- **정적 EWC**: 고정된 lambda 값(기본값: 1.0)을 사용한 지식 보존
+- **동적 EWC**: 이전 윈도우 결과에 따라 lambda 값을 동적으로 조정
+
+### 2. 동적 Lambda 조정 기능
+
+온라인 학습 과정에서 이전 윈도우의 성능 지표(Sharpe ratio)에 따라 EWC lambda 값을 자동으로 조정합니다:
+
+#### 조정 로직
+- **성능 개선 시**: lambda 감소 → 더 적극적인 학습 허용
+- **성능 저하 시**: lambda 증가 → 이전 지식 보존 강화
+- **성능 유지 시**: lambda 유지 → 임계값 미만 변화는 무시
+
+#### 주요 함수들
+- `adjust_lambda_dynamically()`: 성능 변화에 따른 lambda 조정
+- `calculate_adaptive_lambda()`: 휴리스틱 방법과 성능 기반 조정 결합
+- `estimate_lambda_ewc()`: Fisher 정보 기반 휴리스틱 lambda 계산
+
+#### 사용 방법
+```python
+# 동적 lambda 조정 활성화
+params["lambda_ewc"] = "auto"
+
+# 온라인 학습 실행
+run_online_learning(
+    experiment_name="your_experiment",
+    features_file_path="your_data.csv",
+    params=params,
+    window_size=8064,
+    delta=2016,
+    fine_tune_epochs=1
+)
+```
+
+#### 결과 분석
+- `lambda_sharpe_history.csv`: 각 윈도우별 lambda와 Sharpe ratio 기록
+- 실시간 lambda 조정 로그 출력
+- 성능 변화에 따른 lambda 변화 추적
+
+### 3. 온라인 학습
+- 슬라이딩 윈도우 기반 연속 학습
+- EWC를 통한 catastrophic forgetting 방지
+- 실시간 성능 모니터링
+
+## 설치 및 실행
+
+### 의존성 설치
+```bash
+pip install -r requirements.txt
+```
+
+### 동적 Lambda 조정 테스트
+```bash
+python examples/test_dynamic_lambda.py
+```
+
+### 온라인 학습 실행
+```bash
+python examples/infer_launcher.py
+```
+
+## 설정 옵션
+
+### EWC 관련 설정
+```python
+params = {
+    "lambda_ewc": "auto",  # "auto" 또는 고정값 (예: 1.0, 100.0)
+    "lambda_ewc_target_ratio": 0.5,  # 휴리스틱 계산용 목표 비율
+}
+```
+
+### 동적 조정 파라미터
+```python
+# adjust_lambda_dynamically 함수에서 조정 가능
+adjustment_factor=0.2,      # 조정 강도 (0~1)
+performance_threshold=0.1,  # 성능 변화 임계값
+min_lambda=0.1,            # 최소 lambda 값
+max_lambda=10.0,           # 최대 lambda 값
+```
+
+## 파일 구조
+
+```
+dpa/
+├── mom_trans/
+│   ├── new_inference.py      # 온라인 학습 및 동적 lambda 조정
+│   ├── deep_momentum_network.py
+│   └── momentum_transformer.py
+├── examples/
+│   ├── infer_launcher.py     # 온라인 학습 실행 예제
+│   └── test_dynamic_lambda.py # 동적 lambda 조정 테스트
+└── README.md
+```
+
+## 성능 모니터링
+
+온라인 학습 중 다음과 같은 정보를 확인할 수 있습니다:
+
+1. **실시간 로그**: 각 윈도우별 Sharpe ratio와 lambda 값
+2. **동적 조정 로그**: lambda 변화 원인과 조정량
+3. **히스토리 파일**: 전체 학습 과정의 lambda와 성능 추이
+
+## 주의사항
+
+- 동적 lambda 조정은 첫 번째 윈도우 이후부터 적용됩니다
+- 성능 변화가 임계값보다 작으면 lambda 조정이 발생하지 않습니다
+- lambda 값은 설정된 최소/최대 범위 내에서만 조정됩니다
+
+## 라이선스
+
+이 프로젝트는 MIT 라이선스 하에 배포됩니다.
